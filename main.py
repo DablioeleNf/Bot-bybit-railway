@@ -21,21 +21,25 @@ def enviar_telegram(msg):
 def buscar_pares_usdt():
     try:
         url = "https://api.bybit.com/v5/market/instruments-info?category=spot"
-        response = requests.get(url, timeout=15)
-        if response.status_code != 200:
-            print(f"Erro HTTP: {response.status_code}")
+        resposta = requests.get(url, timeout=10)
+
+        # Verifica se houve erro HTTP
+        if resposta.status_code != 200:
+            enviar_telegram(f"❌ Erro HTTP {resposta.status_code} ao acessar API da Bybit.")
             return []
-        data = response.json()
-        if not data.get("result") or not data["result"].get("list"):
-            print("Resposta inesperada da API da Bybit")
+
+        r = resposta.json()
+
+        # Verifica se a estrutura do JSON está correta
+        if not r.get("result") or not r["result"].get("list"):
+            enviar_telegram("❌ JSON inválido ou incompleto recebido da Bybit.")
             return []
-        usdt_pairs = [item["symbol"] for item in data["result"]["list"] if item["symbol"].endswith("USDT")]
-        if not usdt_pairs:
-            print("Nenhum par USDT encontrado.")
-        return usdt_pairs
+
+        return [s["symbol"] for s in r["result"]["list"] if s["symbol"].endswith("USDT")]
     except Exception as e:
-        print(f"Erro ao buscar pares USDT: {e}")
+        enviar_telegram(f"❌ Erro ao buscar pares na Bybit: {str(e)}")
         return []
+
 
 def obter_dados(par, intervalo="1h", limite=200):
     try:
