@@ -22,28 +22,34 @@ def buscar_pares_usdt():
     try:
         url = "https://api.binance.com/api/v3/exchangeInfo"
         r = requests.get(url, timeout=10).json()
-        return [s["symbol"] for s in r["symbols"] if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"]
+        return [s["symbol"] for s in r["symbols"] if s["symbol"].endswith("USDT") and s["status"] == "TRADING"]
     except:
         return []
 
 def obter_dados(par, intervalo="1h", limite=200):
-    try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={par}&interval={intervalo}&limit={limite}"
-        r = requests.get(url).json()
+    url = f"https://api.binance.com/api/v3/klines?symbol={par}&interval={intervalo}&limit={limite}"
+    r = requests.get(url).json()
+    if isinstance(r, list):
         df = pd.DataFrame(r, columns=[
             "timestamp", "open", "high", "low", "close", "volume",
-            "_", "_", "_", "_", "_", "_"
+            "close_time", "quote_asset_volume", "num_trades",
+            "taker_buy_base", "taker_buy_quote", "ignore"
         ])
         df["close"] = df["close"].astype(float)
+        df["open"] = df["open"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df["volume"] = df["volume"].astype(float)
         return df
-    except:
-        return None
+    return None
 
 def detectar_formacoes(df):
     ult = df.iloc[-1]
     corpo = abs(float(ult["open"]) - float(ult["close"]))
     sombra_inf = float(ult["low"]) - min(float(ult["open"]), float(ult["close"]))
-    return corpo < sombra_inf and sombra_inf > corpo * 2
+    if corpo < sombra_inf and sombra_inf > corpo * 2:
+        return True
+    return False
 
 def calcular_score(df1h, df5m):
     score = 0
@@ -60,9 +66,9 @@ def calcular_score(df1h, df5m):
     ema = ta.trend.EMAIndicator(df1h["close"], window=21).ema_indicator().iloc[-1]
     if df1h["close"].iloc[-1] > ema:
         score += 1
-        sinais.append("EMA tendência alta")
+        sinais.append("EMA tendência de alta")
     else:
-        sinais.append("EMA tendência baixa")
+        sinais.append("EMA tendência de baixa")
 
     bb = ta.volatility.BollingerBands(df1h["close"])
     if df1h["close"].iloc[-1] < bb.bollinger_lband().iloc[-1]:
@@ -84,7 +90,13 @@ def calcular_score(df1h, df5m):
 
     if detectar_formacoes(df5m):
         score += 1
-        sinais.append("Formação gráfica detectada")
+        sinais.append("Formação gráfica de reversão")
+
+    vol_atual = df1h["volume"].iloc[-1]
+    vol_medio = df1h["volume"].rolling(20).mean().iloc[-1]
+    if vol_atual > vol_medio * 1.5:
+        score += 1
+        sinais.append("Volume elevado (potencial explosão)")
 
     return score, sinais
 
@@ -103,7 +115,6 @@ def analisar():
     melhor_par = None
     melhor_score = 0
     melhor_sinais = []
-    preco_entrada = 0
 
     for par in pares:
         df1h = obter_dados(par, "1h", 200)
@@ -118,35 +129,38 @@ def analisar():
             melhor_score = score
             melhor_par = par
             melhor_sinais = sinais
-            preco_entrada = df1h["close"].iloc[-1]
 
     if melhor_score >= 4:
-        tp1 = round(preco_entrada * 1.01, 6)
-        tp2 = round(preco_entrada * 1.015, 6)
-        tp3 = round(preco_entrada * 1.02, 6)
-        alvo = round(preco_entrada * 1.025, 6)
-        sl = round(preco_entrada * 0.98, 6)
-        agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        msg = f"✅ Sinal forte detectado!
+        preco = df1h["close"].iloc[-1]
+        entrada = preco
+        tp1 = round(entrada * 1.01, 4)
+        tp2 = round(entrada * 1.02, 4)
+        tp3 = round(entrada * 1.03, 4)
+        alvo = round(entrada * 1.04, 4)
+        sl = round(entrada * 0.985, 4)
+        hora = datetime.now().strftime("%H:%M:%S")
 
-🕒 Hora: {agora}
+        msg = f"""✅ Sinal forte detectado!
+🕒 Horário: {hora}
 📊 Par: {melhor_par}
-📈 Score: {melhor_score}/5
-📥 Entrada: {preco_entrada}
-🎯 Alvo final: {alvo}
-💰 TPs: {tp1}, {tp2}, {tp3}
-🛑 Stop Loss: {sl}
+📈 Score: {melhor_score}/6
+💵 Entrada: {entrada}
+🎯 TP1: {tp1}
+🎯 TP2: {tp2}
+🎯 TP3: {tp3}
+🏁 Alvo final: {alvo}
+❌ Stop Loss: {sl}
+🧠 Critérios:"""
 
-🧠 Critérios:
-"
         for s in melhor_sinais:
-            msg += f"• {s}\n"
+            msg += f"\n• {s}"
+
         enviar_telegram(msg)
     else:
         enviar_telegram("⚠️ Nenhum sinal forte encontrado nesta análise.")
 
-enviar_telegram("🤖 Bot Binance iniciado com sucesso!")
+# === INÍCIO DO BOT ===
+enviar_telegram("🤖 Bot com Binance iniciado com sucesso!")
 while True:
     analisar()
-    time.sleep(1800)
-upgrade: entrada, TPs, SL, hora adicionados ao sinal
+    time.sleep(1800)  # 30 minutos
