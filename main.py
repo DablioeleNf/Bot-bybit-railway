@@ -5,15 +5,15 @@ import ta
 from datetime import datetime
 import logging
 
-# Configurações do Telegram
+# Configurações iniciais
 TOKEN = "8088057144:AAED-qGi9sXtQ42LK8L1MwwTqZghAE21I3U"
 CHAT_ID = "719387436"
 CSV_FILE = "sinais_registrados.csv"
 
-# Configuração de Logs
-logging.basicConfig(filename="bot_logs.log", level=logging.INFO, 
-                    format="%(asctime)s - %(levelname)s - %(message)s")
+# Configuração de logs
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Função para enviar mensagens no Telegram
 def enviar_telegram(msg):
     try:
         requests.post(
@@ -23,16 +23,39 @@ def enviar_telegram(msg):
     except Exception as e:
         logging.error(f"Erro ao enviar mensagem no Telegram: {e}")
 
+# Função para buscar os pares USDT
 def buscar_pares_usdt():
     try:
         url = "https://api.binance.com/api/v3/exchangeInfo"
-        r = requests.get(url, timeout=10).json()
-        return [s["symbol"] for s in r["symbols"] if s["symbol"].endswith("USDT") and s["status"] == "TRADING"]
+        r = requests.get(url, timeout=10)
+        
+        if r.status_code != 200:
+            raise ValueError(f"Erro na resposta da API: {r.status_code}")
+        
+        data = r.json()
+        
+        if "symbols" not in data:
+            raise KeyError("A chave 'symbols' não foi encontrada na resposta da API.")
+        
+        pares = [
+            s["symbol"] for s in data["symbols"] 
+            if s["symbol"].endswith("USDT") and s.get("status") == "TRADING"
+        ]
+        return pares
+    except requests.exceptions.RequestException as e:
+        enviar_telegram(f"❌ Erro ao conectar à API Binance: {e}")
+        logging.error(f"Erro ao conectar à API Binance: {e}")
+        return []
+    except KeyError as e:
+        enviar_telegram(f"❌ Erro ao processar pares: {e}")
+        logging.error(f"Erro ao processar pares: {e}")
+        return []
     except Exception as e:
-        enviar_telegram(f"❌ Erro ao buscar pares: {e}")
-        logging.error(f"Erro ao buscar pares: {e}")
+        enviar_telegram(f"❌ Erro desconhecido ao buscar pares: {e}")
+        logging.error(f"Erro desconhecido ao buscar pares: {e}")
         return []
 
+# Função para obter os dados de mercado
 def obter_dados(par, intervalo="1h", limite=200):
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={par}&interval={intervalo}&limit={limite}"
@@ -54,20 +77,17 @@ def obter_dados(par, intervalo="1h", limite=200):
         logging.error(f"Erro ao obter dados de {par}: {e}")
         return None
 
+# Função para detectar formações de reversão
 def detectar_formacoes(df):
     try:
         ult = df.iloc[-1]
-        prev = df.iloc[-2]
-        # Exemplo: Engulfing
-        if ult["close"] > ult["open"] and prev["close"] < prev["open"] and ult["close"] > prev["open"] and ult["open"] < prev["close"]:
-            return "compra"
-        elif ult["close"] < ult["open"] and prev["close"] > prev["open"] and ult["close"] < prev["open"] and ult["open"] > prev["close"]:
-            return "venda"
-        return None
-    except Exception as e:
-        logging.error(f"Erro ao detectar formações: {e}")
-        return None
+        corpo = abs(ult["open"] - ult["close"])
+        sombra_inf = ult["low"] - min(ult["open"], ult["close"])
+        return corpo < sombra_inf and sombra_inf > corpo * 2
+    except:
+        return False
 
+# Função para calcular score
 def calcular_score(df1h, df5m):
     score = 0
     sinais = []
@@ -78,11 +98,11 @@ def calcular_score(df1h, df5m):
     # RSI
     rsi = ta.momentum.RSIIndicator(df1h["close"]).rsi().iloc[-1]
     if rsi < 30:
-        score += 1.5
+        score += 1
         sinais.append("RSI sobrevendido")
         votos.append("compra")
     elif rsi > 70:
-        score += 1.5
+        score += 1
         sinais.append("RSI sobrecomprado")
         votos.append("venda")
 
@@ -107,50 +127,36 @@ def calcular_score(df1h, df5m):
         sinais.append("Bollinger acima da banda")
         votos.append("venda")
 
-    # Suporte e Resistência
-    suporte = df1h["low"].rolling(window=50).min().iloc[-1]
-    resistencia = df1h["high"].rolling(window=50).max().iloc[-1]
-    if abs(preco - suporte) / preco < 0.01:
+    # Suporte e resistência
+    suporte = min(df1h["close"].tail(20))
+    resistencia = max(df1h["close"].tail(20))
+    if abs(preco - suporte)/preco < 0.01:
         score += 1
         sinais.append("Suporte próximo")
         votos.append("compra")
-    elif abs(preco - resistencia) / preco < 0.01:
+    elif abs(preco - resistencia)/preco < 0.01:
         score += 1
         sinais.append("Resistência próxima")
         votos.append("venda")
 
     # Formação de reversão
-    formacao = detectar_formacoes(df5m)
-    if formacao == "compra":
+    if detectar_formacoes(df5m):
         score += 1
-        sinais.append("Formação de reversão para alta")
+        sinais.append("Formação de reversão")
         votos.append("compra")
-    elif formacao == "venda":
-        score += 1
-        sinais.append("Formação de reversão para baixa")
-        votos.append("venda")
 
-    # Direção final
     direcao = "compra" if votos.count("compra") > votos.count("venda") else "venda"
 
     return score, sinais, direcao, preco
 
+# Função para registrar sinais no CSV
 def registrar_sinal(par, score, sinais, direcao):
     agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     linha = f"{agora},{par},{score},{direcao},{'|'.join(sinais)},Sim\n"
     with open(CSV_FILE, "a") as f:
         f.write(linha)
 
-def ja_enviado(par, direcao):
-    try:
-        with open(CSV_FILE, "r") as f:
-            for linha in f:
-                if par in linha and direcao in linha:
-                    return True
-    except FileNotFoundError:
-        return False
-    return False
-
+# Função principal de análise
 def analisar():
     pares = buscar_pares_usdt()
     if not pares:
@@ -166,7 +172,7 @@ def analisar():
             continue
 
         score, sinais, direcao, preco = calcular_score(df1h, df5m)
-        if score > melhor_score and not ja_enviado(par, direcao):
+        if score > melhor_score:
             melhor_score = score
             melhor = {
                 "par": par,
@@ -207,8 +213,5 @@ def analisar():
 # Execução contínua a cada 20 minutos
 enviar_telegram("🤖 Bot com Binance iniciado!")
 while True:
-    try:
-        analisar()
-    except Exception as e:
-        logging.error(f"Erro no loop principal: {e}")
+    analisar()
     time.sleep(1200)
