@@ -1,3 +1,4 @@
+
 import pandas as pd
 import requests
 import time
@@ -15,59 +16,40 @@ def enviar_telegram(msg):
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": msg}
         )
-    except Exception as e:
-        print(f"Erro ao enviar mensagem Telegram: {e}")
+    except:
+        pass
 
 def buscar_pares_usdt():
     try:
-        url = "https://api.bybit.com/v5/market/instruments-info?category=spot"
-        resposta = requests.get(url, timeout=10)
-
-        # Verifica se houve erro HTTP
-        if resposta.status_code != 200:
-            enviar_telegram(f"❌ Erro HTTP {resposta.status_code} ao acessar API da Bybit.")
-            return []
-
-        r = resposta.json()
-
-        # Verifica se a estrutura do JSON está correta
-        if not r.get("result") or not r["result"].get("list"):
-            enviar_telegram("❌ JSON inválido ou incompleto recebido da Bybit.")
-            return []
-
-        return [s["symbol"] for s in r["result"]["list"] if s["symbol"].endswith("USDT")]
-    except Exception as e:
-        enviar_telegram(f"❌ Erro ao buscar pares na Bybit: {str(e)}")
+        url = "https://api.binance.com/api/v3/exchangeInfo"
+        r = requests.get(url, timeout=10).json()
+        return [s["symbol"] for s in r["symbols"] if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"]
+    except:
         return []
-
 
 def obter_dados(par, intervalo="1h", limite=200):
     try:
-        url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={par}&interval={intervalo}&limit={limite}"
+        url = f"https://api.binance.com/api/v3/klines?symbol={par}&interval={intervalo}&limit={limite}"
         r = requests.get(url).json()
-        if "result" in r and "list" in r["result"]:
-            df = pd.DataFrame(r["result"]["list"], columns=[
-                "timestamp", "open", "high", "low", "close", "volume", "turnover"])
-            df["close"] = df["close"].astype(float)
-            return df
-        return None
+        df = pd.DataFrame(r, columns=[
+            "timestamp", "open", "high", "low", "close", "volume",
+            "_", "_", "_", "_", "_", "_"
+        ])
+        df["close"] = df["close"].astype(float)
+        return df
     except:
         return None
 
 def detectar_formacoes(df):
-    # Exemplo básico de formação gráfica de candle de reversão (martelo)
     ult = df.iloc[-1]
     corpo = abs(float(ult["open"]) - float(ult["close"]))
     sombra_inf = float(ult["low"]) - min(float(ult["open"]), float(ult["close"]))
-    if corpo < sombra_inf and sombra_inf > corpo * 2:
-        return True
-    return False
+    return corpo < sombra_inf and sombra_inf > corpo * 2
 
 def calcular_score(df1h, df5m):
     score = 0
     sinais = []
 
-    # RSI
     rsi = ta.momentum.RSIIndicator(df1h["close"]).rsi().iloc[-1]
     if rsi < 30:
         score += 1
@@ -76,7 +58,6 @@ def calcular_score(df1h, df5m):
         score += 1
         sinais.append("RSI sobrecomprado")
 
-    # EMA
     ema = ta.trend.EMAIndicator(df1h["close"], window=21).ema_indicator().iloc[-1]
     if df1h["close"].iloc[-1] > ema:
         score += 1
@@ -84,7 +65,6 @@ def calcular_score(df1h, df5m):
     else:
         sinais.append("EMA tendência baixa")
 
-    # Bollinger Bands
     bb = ta.volatility.BollingerBands(df1h["close"])
     if df1h["close"].iloc[-1] < bb.bollinger_lband().iloc[-1]:
         score += 1
@@ -93,7 +73,6 @@ def calcular_score(df1h, df5m):
         score += 1
         sinais.append("Bollinger acima da banda superior")
 
-    # Suporte e resistência
     suporte = min(df1h["close"].tail(20))
     resistencia = max(df1h["close"].tail(20))
     preco = df1h["close"].iloc[-1]
@@ -104,7 +83,6 @@ def calcular_score(df1h, df5m):
         score += 1
         sinais.append("Resistência próxima")
 
-    # Formações gráficas
     if detectar_formacoes(df5m):
         score += 1
         sinais.append("Formação gráfica detectada")
@@ -120,16 +98,17 @@ def registrar_sinal(par, score, sinais, confiavel):
 def analisar():
     pares = buscar_pares_usdt()
     if not pares:
-        enviar_telegram("❌ Erro ao buscar pares na Bybit.")
+        enviar_telegram("❌ Erro ao buscar pares na Binance.")
         return
 
     melhor_par = None
     melhor_score = 0
     melhor_sinais = []
+    preco_entrada = 0
 
     for par in pares:
-        df1h = obter_dados(par, "60", 200)
-        df5m = obter_dados(par, "5", 200)
+        df1h = obter_dados(par, "1h", 200)
+        df5m = obter_dados(par, "5m", 200)
         if df1h is None or df5m is None:
             continue
 
@@ -140,17 +119,35 @@ def analisar():
             melhor_score = score
             melhor_par = par
             melhor_sinais = sinais
+            preco_entrada = df1h["close"].iloc[-1]
 
     if melhor_score >= 4:
-        msg = f"✅ Sinal forte detectado!\n\n📊 Par: {melhor_par}\n📈 Score: {melhor_score}/5\n🧠 Critérios:\n"
+        tp1 = round(preco_entrada * 1.01, 6)
+        tp2 = round(preco_entrada * 1.015, 6)
+        tp3 = round(preco_entrada * 1.02, 6)
+        alvo = round(preco_entrada * 1.025, 6)
+        sl = round(preco_entrada * 0.98, 6)
+        agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        msg = f"✅ Sinal forte detectado!
+
+🕒 Hora: {agora}
+📊 Par: {melhor_par}
+📈 Score: {melhor_score}/5
+📥 Entrada: {preco_entrada}
+🎯 Alvo final: {alvo}
+💰 TPs: {tp1}, {tp2}, {tp3}
+🛑 Stop Loss: {sl}
+
+🧠 Critérios:
+"
         for s in melhor_sinais:
             msg += f"• {s}\n"
         enviar_telegram(msg)
     else:
         enviar_telegram("⚠️ Nenhum sinal forte encontrado nesta análise.")
 
-# === EXECUÇÃO INICIAL ===
-enviar_telegram("🤖 Bot com Bybit iniciado com sucesso!")
+enviar_telegram("🤖 Bot Binance iniciado com sucesso!")
 while True:
     analisar()
-    time.sleep(1800)  # Executa a cada 30 minutos
+    time.sleep(1800)
+upgrade: entrada, TPs, SL, hora adicionados ao sinal
