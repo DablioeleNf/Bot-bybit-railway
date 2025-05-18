@@ -15,28 +15,37 @@ def enviar_telegram(msg):
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": msg}
         )
-    except:
-        pass
+    except Exception as e:
+        print(f"Erro ao enviar mensagem Telegram: {e}")
 
 def buscar_pares_usdt():
     try:
         url = "https://api.bybit.com/v5/market/instruments-info?category=spot"
-        r = requests.get(url, timeout=10).json()
-        if "result" not in r or "list" not in r["result"]:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            print(f"Erro HTTP: {r.status_code}")
             return []
-        return [s["symbol"] for s in r["result"]["list"] if s["symbol"].endswith("USDT")]
-    except:
+        data = r.json()
+        if "result" not in data or "list" not in data["result"]:
+            print("Formato de resposta inesperado da API")
+            return []
+        return [s["symbol"] for s in data["result"]["list"] if s["symbol"].endswith("USDT")]
+    except Exception as e:
+        print(f"Erro ao buscar pares: {e}")
         return []
 
 def obter_dados(par, intervalo="1h", limite=200):
-    url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={par}&interval={intervalo}&limit={limite}"
-    r = requests.get(url).json()
-    if "result" in r and "list" in r["result"]:
-        df = pd.DataFrame(r["result"]["list"], columns=[
-            "timestamp", "open", "high", "low", "close", "volume", "turnover"])
-        df["close"] = df["close"].astype(float)
-        return df
-    return None
+    try:
+        url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={par}&interval={intervalo}&limit={limite}"
+        r = requests.get(url).json()
+        if "result" in r and "list" in r["result"]:
+            df = pd.DataFrame(r["result"]["list"], columns=[
+                "timestamp", "open", "high", "low", "close", "volume", "turnover"])
+            df["close"] = df["close"].astype(float)
+            return df
+        return None
+    except:
+        return None
 
 def detectar_formacoes(df):
     # Exemplo básico de formação gráfica de candle de reversão (martelo)
