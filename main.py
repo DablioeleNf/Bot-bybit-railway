@@ -4,8 +4,9 @@ import time
 import ta
 from datetime import datetime
 
-TOKEN = "SEU_TOKEN_DO_TELEGRAM"
-CHAT_ID = "SEU_CHAT_ID"
+# TOKEN e CHAT ID já configurados
+TOKEN = "8088057144:AAED-qGi9sXtQ42LK8L1MwwTqZghAE21I3U"
+CHAT_ID = "719387436"
 CSV_FILE = "sinais_registrados.csv"
 
 def enviar_telegram(msg):
@@ -175,4 +176,4 @@ def analisar():
 enviar_telegram("🤖 Bot com Binance iniciado!")
 while True:
     analisar()
-    time.sleep(1200)  # 20 minutos
+    time.sleep(1200)
