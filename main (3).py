@@ -150,3 +150,4 @@ enviar_telegram("🤖 Bot Binance iniciado com sucesso!")
 while True:
     analisar()
     time.sleep(1800)
+delete: removido arquivo desnecessário
