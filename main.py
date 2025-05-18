@@ -3,11 +3,16 @@ import requests
 import time
 import ta
 from datetime import datetime
+import logging
 
-# TOKEN e CHAT ID já configurados
+# Configurações do Telegram
 TOKEN = "8088057144:AAED-qGi9sXtQ42LK8L1MwwTqZghAE21I3U"
 CHAT_ID = "719387436"
 CSV_FILE = "sinais_registrados.csv"
+
+# Configuração de Logs
+logging.basicConfig(filename="bot_logs.log", level=logging.INFO, 
+                    format="%(asctime)s - %(levelname)s - %(message)s")
 
 def enviar_telegram(msg):
     try:
@@ -16,7 +21,7 @@ def enviar_telegram(msg):
             data={"chat_id": CHAT_ID, "text": msg}
         )
     except Exception as e:
-        print(f"Erro ao enviar Telegram: {e}")
+        logging.error(f"Erro ao enviar mensagem no Telegram: {e}")
 
 def buscar_pares_usdt():
     try:
@@ -25,6 +30,7 @@ def buscar_pares_usdt():
         return [s["symbol"] for s in r["symbols"] if s["symbol"].endswith("USDT") and s["status"] == "TRADING"]
     except Exception as e:
         enviar_telegram(f"❌ Erro ao buscar pares: {e}")
+        logging.error(f"Erro ao buscar pares: {e}")
         return []
 
 def obter_dados(par, intervalo="1h", limite=200):
@@ -45,17 +51,22 @@ def obter_dados(par, intervalo="1h", limite=200):
         df["volume"] = df["volume"].astype(float)
         return df
     except Exception as e:
-        print(f"Erro ao obter dados de {par}: {e}")
+        logging.error(f"Erro ao obter dados de {par}: {e}")
         return None
 
 def detectar_formacoes(df):
     try:
         ult = df.iloc[-1]
-        corpo = abs(ult["open"] - ult["close"])
-        sombra_inf = ult["low"] - min(ult["open"], ult["close"])
-        return corpo < sombra_inf and sombra_inf > corpo * 2
-    except:
-        return False
+        prev = df.iloc[-2]
+        # Exemplo: Engulfing
+        if ult["close"] > ult["open"] and prev["close"] < prev["open"] and ult["close"] > prev["open"] and ult["open"] < prev["close"]:
+            return "compra"
+        elif ult["close"] < ult["open"] and prev["close"] > prev["open"] and ult["close"] < prev["open"] and ult["open"] > prev["close"]:
+            return "venda"
+        return None
+    except Exception as e:
+        logging.error(f"Erro ao detectar formações: {e}")
+        return None
 
 def calcular_score(df1h, df5m):
     score = 0
@@ -64,16 +75,18 @@ def calcular_score(df1h, df5m):
 
     preco = df1h["close"].iloc[-1]
 
+    # RSI
     rsi = ta.momentum.RSIIndicator(df1h["close"]).rsi().iloc[-1]
     if rsi < 30:
-        score += 1
+        score += 1.5
         sinais.append("RSI sobrevendido")
         votos.append("compra")
     elif rsi > 70:
-        score += 1
+        score += 1.5
         sinais.append("RSI sobrecomprado")
         votos.append("venda")
 
+    # EMA
     ema = ta.trend.EMAIndicator(df1h["close"], window=21).ema_indicator().iloc[-1]
     if preco > ema:
         score += 1
@@ -83,6 +96,7 @@ def calcular_score(df1h, df5m):
         sinais.append("EMA tendência de baixa")
         votos.append("venda")
 
+    # Bollinger Bands
     bb = ta.volatility.BollingerBands(df1h["close"])
     if preco < bb.bollinger_lband().iloc[-1]:
         score += 1
@@ -93,22 +107,30 @@ def calcular_score(df1h, df5m):
         sinais.append("Bollinger acima da banda")
         votos.append("venda")
 
-    suporte = min(df1h["close"].tail(20))
-    resistencia = max(df1h["close"].tail(20))
-    if abs(preco - suporte)/preco < 0.01:
+    # Suporte e Resistência
+    suporte = df1h["low"].rolling(window=50).min().iloc[-1]
+    resistencia = df1h["high"].rolling(window=50).max().iloc[-1]
+    if abs(preco - suporte) / preco < 0.01:
         score += 1
         sinais.append("Suporte próximo")
         votos.append("compra")
-    elif abs(preco - resistencia)/preco < 0.01:
+    elif abs(preco - resistencia) / preco < 0.01:
         score += 1
         sinais.append("Resistência próxima")
         votos.append("venda")
 
-    if detectar_formacoes(df5m):
+    # Formação de reversão
+    formacao = detectar_formacoes(df5m)
+    if formacao == "compra":
         score += 1
-        sinais.append("Formação de reversão")
+        sinais.append("Formação de reversão para alta")
         votos.append("compra")
+    elif formacao == "venda":
+        score += 1
+        sinais.append("Formação de reversão para baixa")
+        votos.append("venda")
 
+    # Direção final
     direcao = "compra" if votos.count("compra") > votos.count("venda") else "venda"
 
     return score, sinais, direcao, preco
@@ -118,6 +140,16 @@ def registrar_sinal(par, score, sinais, direcao):
     linha = f"{agora},{par},{score},{direcao},{'|'.join(sinais)},Sim\n"
     with open(CSV_FILE, "a") as f:
         f.write(linha)
+
+def ja_enviado(par, direcao):
+    try:
+        with open(CSV_FILE, "r") as f:
+            for linha in f:
+                if par in linha and direcao in linha:
+                    return True
+    except FileNotFoundError:
+        return False
+    return False
 
 def analisar():
     pares = buscar_pares_usdt()
@@ -134,7 +166,7 @@ def analisar():
             continue
 
         score, sinais, direcao, preco = calcular_score(df1h, df5m)
-        if score > melhor_score:
+        if score > melhor_score and not ja_enviado(par, direcao):
             melhor_score = score
             melhor = {
                 "par": par,
@@ -175,5 +207,8 @@ def analisar():
 # Execução contínua a cada 20 minutos
 enviar_telegram("🤖 Bot com Binance iniciado!")
 while True:
-    analisar()
+    try:
+        analisar()
+    except Exception as e:
+        logging.error(f"Erro no loop principal: {e}")
     time.sleep(1200)
